@@ -20,7 +20,8 @@ import numpy as np
 from PIL import Image
 
 # Allow importing project modules when executed directly
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# This script lives in repo_root/pipeline/DAMO-YOLO, so go up two levels to reach repo root.
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
