@@ -8,7 +8,9 @@ __all__ = ['vis']
 
 
 def vis(img, boxes, scores, cls_ids, conf=0.5, class_names=None):
-
+    # Ensure the image is writeable (some PIL->numpy conversions produce readonly arrays)
+    if not img.flags.writeable:
+        img = img.copy()
     for i in range(len(boxes)):
         box = boxes[i]
         cls_id = int(cls_ids[i])
