@@ -42,7 +42,7 @@ CONFIG_FILE="configs/damoyolo_tinynasL25_S_person.py"
 INPUT_MODEL_PT="pipeline/DAMO-YOLO/input/damoyolo_tinynasL25_S_person.pt"
 
 # Final desired path for the converted ONNX model
-FINAL_OUTPUT_ONNX="pipeline/DAMO-YOLO/output/damoyolo_tinynasL25_S_person.onnx"
+FINAL_OUTPUT_ONNX="pipeline/output/damoyolo_tinynasL25_S_person.onnx"
 
 # The ONNX file name is derived automatically from the config file name inside converter.py.
 # We'll compute it here too for clarity and moving.
