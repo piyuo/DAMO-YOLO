@@ -4,4 +4,4 @@
 echo "🔧 Activating Python environment..."
 source .venv/bin/activate
 
-python pipeline/DAMO-YOLO/inference.py --debug
+python pipeline/DAMO-YOLO/inference.py  --debug --image pipeline/dataset/demo/3.png
