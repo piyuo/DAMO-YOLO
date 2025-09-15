@@ -13,6 +13,7 @@ Outputs an annotated image and prints raw detection results.
 
 import os
 import sys
+import argparse
 from typing import List
 
 import torch
@@ -62,12 +63,43 @@ def format_results(bboxes: torch.Tensor, scores: torch.Tensor, labels: torch.Ten
     return lines
 
 
+def parse_args():
+    parser = argparse.ArgumentParser("Person inference")
+    parser.add_argument('--config', default=os.path.join(ROOT, 'configs', 'damoyolo_tinynasL25_S.py'))
+    parser.add_argument('--ckpt', default=os.path.join(ROOT, 'pipeline', 'DAMO-YOLO', 'input', 'damoyolo_tinynasL25_S_person.pt'))
+    parser.add_argument('--image', default=os.path.join(ROOT, 'pipeline', 'dataset', 'demo', 'demo.jpg'))
+    parser.add_argument('--output', default=os.path.join(ROOT, 'pipeline', 'output'))
+    parser.add_argument('--conf', type=float, default=0.3, help='confidence threshold for printing + visualization filtering')
+    parser.add_argument('--infer-size', type=int, nargs=2, default=[640, 640], help='inference size (h w)')
+    parser.add_argument('--device', default='auto', choices=['auto','cpu','cuda'])
+    parser.add_argument('--debug', action='store_true', help='print extra score/label diagnostics')
+    return parser.parse_args()
+
+
+def debug_print(scores: torch.Tensor, labels: torch.Tensor, conf: float):
+    if scores.numel() == 0:
+        print('[DEBUG] No boxes returned from model.')
+        return
+    max_score = scores.max().item()
+    min_score = scores.min().item()
+    above = (scores >= conf).sum().item()
+    unique_labels = torch.unique(labels).cpu().tolist()
+    print(f"[DEBUG] scores: count={scores.numel()} min={min_score:.3f} max={max_score:.3f} >=conf({conf})={above}")
+    print(f"[DEBUG] unique raw labels (first 20 shown): {unique_labels[:20]}")
+    # Show top 10 by score
+    topk = min(10, scores.numel())
+    vals, idxs = torch.topk(scores, k=topk)
+    for rank, (v, idx) in enumerate(zip(vals, idxs)):
+        print(f"[DEBUG] top{rank+1}: score={v.item():.3f} label={int(labels[idx])}")
+
+
 def main():
-    # Paths
-    config_file = os.path.join(ROOT, 'configs', 'damoyolo_tinynasL25_S.py')
-    ckpt_path = os.path.join(ROOT, 'pipeline', 'DAMO-YOLO', 'input', 'damoyolo_tinynasL25_S_person.pt')
-    image_path = os.path.join(ROOT, 'pipeline', 'dataset', 'demo', 'demo.jpg')
-    output_dir = os.path.join(ROOT, 'pipeline', 'output')
+    args = parse_args()
+
+    config_file = args.config
+    ckpt_path = args.ckpt
+    image_path = args.image
+    output_dir = args.output
     os.makedirs(output_dir, exist_ok=True)
 
     if not os.path.isfile(ckpt_path):
@@ -75,29 +107,30 @@ def main():
     if not os.path.isfile(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if args.device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    else:
+        device = args.device
 
-    # Build config and inference engine
     cfg = build_person_config(config_file)
-    infer_engine = Infer(cfg, infer_size=[640, 640], device=device, ckpt=ckpt_path, output_dir=output_dir)
+    infer_engine = Infer(cfg, infer_size=args.infer_size, device=device, ckpt=ckpt_path, output_dir=output_dir)
 
-    # Load image
     origin_img = np.asarray(Image.open(image_path).convert('RGB'))
     bboxes, scores, cls_inds = infer_engine.forward(origin_img)
 
-    # Print results
-    conf_thre = 0.25
-    lines = format_results(bboxes, scores, cls_inds, conf_thre)
+    if args.debug:
+        debug_print(scores, cls_inds, args.conf)
+
+    lines = format_results(bboxes, scores, cls_inds, args.conf)
     if not lines:
-        print(f"No person detections above conf {conf_thre}")
+        print(f"No person detections above conf {args.conf}")
     else:
         print("Detections (filtered):")
         for l in lines:
             print(l)
 
-    # Save visualization
     save_name = os.path.basename(image_path)
-    infer_engine.visualize(origin_img, bboxes, scores, cls_inds, conf=conf_thre, save_name=save_name, save_result=True)
+    infer_engine.visualize(origin_img, bboxes, scores, cls_inds, conf=args.conf, save_name=save_name, save_result=True)
     print(f"Annotated image saved to: {os.path.join(output_dir, save_name)}")
 
 
