@@ -1,0 +1,80 @@
+{
+    "folders": [
+        {
+            "path": "."
+        }
+    ],
+    "settings": {
+        "cSpell.words": [
+            "Helvetica",
+            "angular",
+            "assertion",
+            "baseapi",
+            "browser",
+            "browserslist",
+            "build",
+            "dbgcp",
+            "devkit",
+            "gmail",
+            "gobuffalo",
+            "goconvey",
+            "grpc",
+            "hubapi",
+            "hubindex",
+            "injectable",
+            "oauth",
+            "piyuo",
+            "plkdev",
+            "polyfills",
+            "privatelittlekitchen",
+            "projects",
+            "proto",
+            "protobuf",
+            "protoc",
+            "src",
+            "styl"
+        ],
+        "dart.allowTestsOutsideTestFolder": true,
+        "dart.flutterAdditionalArgs1": [
+            "--enable-experiment=non-nullable",
+            "--no-sound-null-safety"
+        ],
+
+        "breadcrumbs.enabled": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.tslint": "explicit",
+            "source.fixAll.eslint": "explicit"
+        },
+        "files.autoGuessEncoding": true,
+        "files.trimTrailingWhitespace": true,
+        "terminal.integrated.copyOnSelection": true,
+        "workbench.colorCustomizations": {},
+        "typescript.referencesCodeLens.enabled": true,
+        "editor.formatOnType": true,
+        "editor.formatOnPaste": true,
+        "editor.formatOnSave": true,
+        "editor.tabCompletion": "on",
+        "files.trimFinalNewlines": true,
+        "files.autoSaveDelay": 300000,
+        "files.autoSave": "afterDelay",
+        "explorer.confirmDragAndDrop": false,
+        "explorer.confirmDelete": false,
+        "editor.suggest.localityBonus": true,
+        "editor.suggest.shareSuggestSelections": true,
+        "editor.insertSpaces": false,
+        "telemetry.enableCrashReporter": false,
+        "workbench.list.openMode": "doubleClick",
+        "workbench.editor.enablePreview": false,
+        "workbench.editor.enablePreviewFromQuickOpen": false,
+        "git.ignoreMissingGitWarning": true,
+        "git.enableSmartCommit": true,
+        "git.autofetch": true,
+        "git.confirmSync": false,
+        "files.exclude": {
+            "**/.tmp.drivedownload": true,
+            "**/node_modules": true,
+            "**/_samples": true
+        },
+        "livePreview.serverRoot": "docs"
+    }
+}
