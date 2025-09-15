@@ -39,26 +39,42 @@ def build_person_config(config_path: str):
       - test.augment.transform.image_max_range -> (640, 640) (ensure expected size)
     """
     cfg = parse_config(config_path)
-    # Adjust to 2-class (background + person) head to match checkpoint shapes
-    # The checkpoint appears to have cls_out_channels=2.
-    cfg.model.head.num_classes = 2
-    cfg.dataset.class_names = ['__bg__', 'person']
+    # Treat checkpoint as a legacy single-class (person) model: legacy=True gives cls_out = num_classes + 1.
+    cfg.model.head.num_classes = 1
+    # Force legacy True (if key exists) so cls_out_channels matches checkpoint (2 channels)
+    try:
+        cfg.model.head.legacy = True
+    except Exception:
+        pass
+    cfg.dataset.class_names = ['person']
     # Ensure test transform size is 640x640 (same as checkpoint training)
     if hasattr(cfg.test, 'augment') and hasattr(cfg.test.augment, 'transform'):
         cfg.test.augment.transform.image_max_range = (640, 640)
     return cfg
 
 
-def format_results(bboxes: torch.Tensor, scores: torch.Tensor, labels: torch.Tensor, conf_thre: float) -> List[str]:
-    lines = []
+def format_results(bboxes: torch.Tensor, scores: torch.Tensor, labels: torch.Tensor, conf_thre: float, legacy_single_class: bool = True) -> List[str]:
+    """Format detections.
+
+    legacy_single_class: if True, interpret label 0 as person and (if present) label 1 as background.
+    In legacy single-class mode (num_classes=1, legacy=True):
+        cls_out_channels = 2, and the last channel is background (index 1), so label 0 = person.
+    The current multiclass_nms implementation may still emit background boxes if background scores pass threshold; we filter them out.
+    """
+    lines: List[str] = []
+    if bboxes.numel() == 0:
+        return lines
     for i in range(bboxes.shape[0]):
         score = scores[i].item()
         if score < conf_thre:
             continue
         x1, y1, x2, y2 = bboxes[i].tolist()
-        cls_id = int(labels[i].item())
-        if cls_id == 0:  # skip background
-            continue
+        raw_label = int(labels[i].item())
+        if legacy_single_class:
+            # Background is expected to be last index (==1); only keep raw_label == 0
+            if raw_label != 0:
+                continue
+        # For single-class output, label is always person
         lines.append(f"person bbox[{i}]: (x1={x1:.1f}, y1={y1:.1f}, x2={x2:.1f}, y2={y2:.1f}), score={score:.3f}")
     return lines
 
@@ -121,7 +137,8 @@ def main():
     if args.debug:
         debug_print(scores, cls_inds, args.conf)
 
-    lines = format_results(bboxes, scores, cls_inds, args.conf)
+    # We now treat the model as legacy single-class person detector
+    lines = format_results(bboxes, scores, cls_inds, args.conf, legacy_single_class=True)
     if not lines:
         print(f"No person detections above conf {args.conf}")
     else:
