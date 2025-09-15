@@ -75,7 +75,8 @@ def format_results(bboxes: torch.Tensor, scores: torch.Tensor, labels: torch.Ten
             if raw_label != 0:
                 continue
         # For single-class output, label is always person
-        lines.append(f"person bbox[{i}]: (x1={x1:.1f}, y1={y1:.1f}, x2={x2:.1f}, y2={y2:.1f}), score={score:.3f}")
+        lines.append(
+            f"person bbox[{i}] (class_id={raw_label}): (x1={x1:.1f}, y1={y1:.1f}, x2={x2:.1f}, y2={y2:.1f}), score={score:.3f}")
     return lines
 
 
@@ -148,7 +149,7 @@ def main():
 
     save_name = os.path.basename(image_path)
     infer_engine.visualize(origin_img, bboxes, scores, cls_inds, conf=args.conf, save_name=save_name, save_result=True)
-    print(f"Annotated image saved to: {os.path.join(output_dir, save_name)}")
+    #print(f"Annotated image saved to: {os.path.join(output_dir, save_name)}")
 
 
 if __name__ == '__main__':
