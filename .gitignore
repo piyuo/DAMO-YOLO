@@ -202,3 +202,7 @@ atlassian-ide-plugin.xml
 
 # Cursive Clojure plugin
 .idea/replstate.xml
+
+
+# pipeline
+pipeline/output/

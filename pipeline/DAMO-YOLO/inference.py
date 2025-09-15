@@ -67,7 +67,7 @@ def main():
     config_file = os.path.join(ROOT, 'configs', 'damoyolo_tinynasL25_S.py')
     ckpt_path = os.path.join(ROOT, 'pipeline', 'DAMO-YOLO', 'input', 'damoyolo_tinynasL25_S_person.pt')
     image_path = os.path.join(ROOT, 'pipeline', 'dataset', 'demo', 'demo.jpg')
-    output_dir = os.path.join(ROOT, 'person_demo')
+    output_dir = os.path.join(ROOT, 'pipeline', 'output')
     os.makedirs(output_dir, exist_ok=True)
 
     if not os.path.isfile(ckpt_path):
