@@ -1,4 +1,4 @@
-# pipeline/DAMO-YOLO/inference.py
+# pipeline/DAMO-YOLO/py_inference_image.py
 
 #!/usr/bin/env python3
 """Simple script to run person-only DAMO-YOLO inference.
