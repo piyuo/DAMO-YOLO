@@ -94,6 +94,8 @@ def parse_args():
     p.add_argument('--overwrite', action='store_true', help='Overwrite existing patched model if present.')
     p.add_argument('--verbose', action='store_true', help='Verbose logging.')
     p.add_argument('--dump-selected-shapes', action='store_true', help='After (patched) inference on a single image, print shapes of selected feature outputs (implies --export-features for that image, but will not save .npy unless --export-features is also given).')
+    p.add_argument('--alias-names', default='', help='Comma-separated short names (e.g. p3,p4,p5) to add as Identity outputs for the selected nodes.')
+    p.add_argument('--drop-original-outputs', action='store_true', help='When alias-names are provided, remove the originally added outputs (effectively renaming instead of duplicating).')
     return p.parse_args()
 
 
@@ -248,6 +250,53 @@ def patch_model_with_outputs(model: onnx.ModelProto, tensor_names: Sequence[str]
     return model
 
 
+def add_alias_outputs(model: onnx.ModelProto, original: Sequence[str], aliases: Sequence[str], drop_original: bool=False, verbose: bool=False) -> onnx.ModelProto:
+    """Insert Identity nodes to alias existing tensor outputs.
+
+    If drop_original is True, will remove the original graph.output entries whose
+    names are in `original` after adding alias outputs. (Underlying internal tensor
+    names remain; we only change exported names.)
+    """
+    from onnx import helper
+    graph = model.graph
+    existing_outputs = {o.name: o for o in graph.output}
+    # Build map of value info for shape copying
+    vi_map = {vi.name: vi for vi in list(graph.value_info) + list(graph.output)}
+    for orig, alias in zip(original, aliases):
+        if alias in existing_outputs:
+            if verbose:
+                print(f"[WARN] Alias name {alias} already an output; skipping.")
+            continue
+        # Create identity node
+        node = helper.make_node('Identity', inputs=[orig], outputs=[alias], name=f"Alias_{alias}")
+        graph.node.append(node)
+        # Copy shape info if available
+        vi_src = vi_map.get(orig)
+        if vi_src is not None:
+            new_vi = helper.make_tensor_value_info(alias, vi_src.type.tensor_type.elem_type,
+                                                   [d.dim_value if d.HasField('dim_value') else None for d in vi_src.type.tensor_type.shape.dim])
+        else:
+            from onnx import TensorProto
+            new_vi = helper.make_tensor_value_info(alias, TensorProto.FLOAT, None)
+        graph.output.append(new_vi)
+        if verbose:
+            print(f"[INFO] Added alias output {alias} -> {orig}")
+    if drop_original:
+        kept = []
+        removed = []
+        for o in graph.output:
+            if o.name in original:
+                removed.append(o.name)
+            else:
+                kept.append(o)
+        if removed and verbose:
+            print(f"[INFO] Dropping original outputs (renamed via aliases): {removed}")
+        # Reassign outputs
+        del graph.output[:]  # clear
+        graph.output.extend(kept)
+    return model
+
+
 # ----------------------------- Inference & Export -----------------------------
 
 def build_session(onnx_path: str, providers_arg: str, force_cpu: bool=False):
@@ -362,6 +411,13 @@ def main():
             print(f"[INFO] Patched model already exists: {patched_path} (use --overwrite to replace)")
         else:
             patched = patch_model_with_outputs(model, selected, verbose=args.verbose)
+            # Handle alias names if requested
+            if args.alias_names:
+                alias_list = [a.strip() for a in args.alias_names.split(',') if a.strip()]
+                if len(alias_list) != len(selected):
+                    print(f"[ERROR] alias-names count ({len(alias_list)}) != selected tensor count ({len(selected)}).")
+                    sys.exit(9)
+                patched = add_alias_outputs(patched, selected, alias_list, drop_original=args.drop_original_outputs, verbose=args.verbose)
             onnx.save(patched, patched_path)
             print(f"[OK] Saved patched model with {len(selected)} extra outputs -> {patched_path}")
     else:
@@ -371,6 +427,20 @@ def main():
             print(f"[ERROR] Selected nodes are not current outputs: {missing}. Add --patch to expose them.")
             sys.exit(4)
         patched_path = args.onnx
+        # If aliasing without patch requested, we still need to modify model file; so perform in-place patch clone
+        if args.alias_names:
+            # Load, alias, save to a new file unless overwrite specified
+            alias_list = [a.strip() for a in args.alias_names.split(',') if a.strip()]
+            if len(alias_list) != len(selected):
+                print(f"[ERROR] alias-names count ({len(alias_list)}) != selected tensor count ({len(selected)}).")
+                sys.exit(9)
+            temp_model = onnx.load(patched_path)
+            temp_model = add_alias_outputs(temp_model, selected, alias_list, drop_original=args.drop_original_outputs, verbose=args.verbose)
+            alias_target = patched_path if args.overwrite else patched_path.replace('.onnx','_alias.onnx')
+            onnx.save(temp_model, alias_target)
+            if args.verbose:
+                print(f"[INFO] Saved alias-augmented model -> {alias_target}")
+            patched_path = alias_target
 
     if args.export_features or args.dump_selected_shapes:
         # Build session on patched model

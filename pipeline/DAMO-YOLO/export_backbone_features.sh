@@ -10,7 +10,8 @@ python3 pipeline/DAMO-YOLO/export_backbone_features.py \
 --select-nodes /neck/merge_5/Concat_output_0,/neck/merge_7/Concat_output_0,/neck/merge_6/Concat_output_0 \
 --patch --dump-selected-shapes \
 --image pipeline/dataset/demo/demo.jpg \
---export-features --force-cpu --verbose
+--alias-names p3,p4,p5 --drop-original-outputs \
+--force-cpu --verbose
 #--summarize
 
 
