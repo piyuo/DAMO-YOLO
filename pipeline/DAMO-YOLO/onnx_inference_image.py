@@ -82,6 +82,9 @@ def parse_args():
     ap.add_argument('--cpu', action='store_true', help='Force CPU execution provider only.')
     ap.add_argument('--no-vis', action='store_true', help='Skip visualization (avoids torch import).')
     ap.add_argument('--pure-np', action='store_true', help='Force pure NumPy preprocessing (ignore config transforms).')
+    ap.add_argument('--person-class', type=int, default=0, help='Index of person class (when multi-class).')
+    ap.add_argument('--auto-person-class', action='store_true', help='Auto-detect person class by highest mean topK score.')
+    ap.add_argument('--no-auto-scale', action='store_true', help='Disable automatic bbox scale detection (always attempt scaling).')
     ap.add_argument('--debug', action='store_true')
     return ap.parse_args()
 
@@ -104,7 +107,9 @@ def default_preproc_cfg() -> PreprocConfig:
         flip_prob=0.0,
         image_mean=(0.0, 0.0, 0.0),
         image_std=(1.0, 1.0, 1.0),
-        keep_ratio=True,
+        # IMPORTANT: Official test transform uses keep_ratio = False (see damo/config/augmentations.py)
+        # Using True introduces letterbox padding and breaks bbox scaling.
+        keep_ratio=False,
     )
 
 
@@ -112,17 +117,22 @@ def preprocess_pure_np(origin_img: np.ndarray, cfg: PreprocConfig, infer_size: T
     """Pure NumPy + PIL preprocessing (no torch)."""
     ih, iw = origin_img.shape[:2]
     th, tw = infer_size
+    # Training / official test pipeline uses keep_ratio False by default, i.e. direct warp
     if cfg.keep_ratio:
+        # Letterbox path (not recommended for this exported model unless it was trained that way)
         scale = min(th / ih, tw / iw)
         new_h = int(round(ih * scale))
         new_w = int(round(iw * scale))
+        img_resized = np.array(Image.fromarray(origin_img).resize((new_w, new_h), Image.BILINEAR))
+        canvas = np.zeros((th, tw, 3), dtype=img_resized.dtype)
+        canvas[:new_h, :new_w] = img_resized
+        arr_img = canvas
     else:
-        new_h, new_w = th, tw
-    img_resized = np.array(Image.fromarray(origin_img).resize((new_w, new_h), Image.BILINEAR))
-    canvas = np.zeros((th, tw, 3), dtype=img_resized.dtype)
-    canvas[:new_h, :new_w] = img_resized
+        # Direct resize (stretch) – matches training config keep_ratio=False
+        img_resized = np.array(Image.fromarray(origin_img).resize((tw, th), Image.BILINEAR))
+        arr_img = img_resized
     # Normalize: to float [0,1] then (x - mean)/std
-    arr = canvas.astype(np.float32) / 255.0
+    arr = arr_img.astype(np.float32) / 255.0
     mean = np.array(cfg.image_mean, dtype=np.float32).reshape(1, 1, 3)
     std = np.array(cfg.image_std, dtype=np.float32).reshape(1, 1, 3)
     arr = (arr - mean) / std
@@ -176,13 +186,11 @@ def improved_postprocess(scores_raw: np.ndarray, bboxes_raw: np.ndarray, num_cla
         labels = np.zeros_like(person_scores, dtype=np.int64)
     else:
         if debug:
-            print("[DEBUG] Using multi-class mode")
-        label_inds = scores.argmax(1)
+            print("[DEBUG] Using multi-class mode (temporary pre-filter, person class chosen later)")
+        # Keep per-class for later filtering; return all for now.
+        labels = scores.argmax(1)
+        # Placeholder; caller will select person class.
         person_scores = scores.max(1)
-        # Filter only person class (assuming class 0 is person)
-        person_mask = label_inds == 0
-        person_scores = person_scores * person_mask  # Zero out non-person detections
-        labels = label_inds
 
     # Apply dynamic thresholding if percentile is specified
     if score_threshold_percentile is not None:
@@ -416,13 +424,73 @@ def main():
         bboxes_raw = bboxes_raw[0]
 
     num_classes_guess = scores_raw.shape[1]
-    legacy = args.legacy_single_class or (num_classes_guess == 2)
+    # Do NOT automatically assume legacy just because num_classes==2.
+    # Many exported heads have two real classes (legacy=False). Require explicit flag.
+    legacy = args.legacy_single_class
+    if args.debug and num_classes_guess == 2 and not legacy:
+        print("[DEBUG] Detected 2 class scores; treating as multi-class (set --legacy-single-class if second channel is background).")
 
     bboxes, scores, labels = improved_postprocess(
         scores_raw, bboxes_raw, num_classes_guess, args.conf, args.nms_iou,
         (ow, oh), legacy, args.use_raw_scores, args.score_threshold_percentile,
         args.max_detections, args.debug
     )
+
+    # Decide which class index is 'person' if multi-class and not legacy
+    person_class_index = args.person_class
+    if not legacy and bboxes.size != 0 and num_classes_guess > 1:
+        if args.auto_person_class:
+            # Heuristic: treat each class column's top-K mean as signal strength
+            K = min(200, scores_raw.shape[0])
+            # Softmax baseline if not raw
+            probs = scores_raw if args.use_raw_scores else np.exp(scores_raw - scores_raw.max(axis=1, keepdims=True))
+            if not args.use_raw_scores:
+                probs = probs / probs.sum(axis=1, keepdims=True)
+            topk_means = []
+            for ci in range(num_classes_guess):
+                cls_scores = np.sort(probs[:, ci])[-K:]
+                topk_means.append((ci, cls_scores.mean()))
+            topk_means.sort(key=lambda x: x[1], reverse=True)
+            person_class_index = topk_means[0][0]
+            if args.debug:
+                print(f"[DEBUG] Auto-selected person class index {person_class_index} via topK mean scores: {topk_means[:3]}")
+        if args.debug:
+            print(f"[DEBUG] Filtering detections to class index {person_class_index}")
+        # Keep only boxes whose predicted label equals chosen class
+        keep_mask = labels == person_class_index
+        bboxes = bboxes[keep_mask]
+        scores = scores[keep_mask]
+        labels = labels[keep_mask]
+
+    # Dynamic scaling detection for bbox coordinates
+    if bboxes.size != 0 and not args.no_auto_scale:
+        infer_h, infer_w = args.infer_size
+        max_before = bboxes[:, [0,2]].max()
+        max_after_expected = max_before * (ow / float(infer_w))
+        # Heuristic: if more than half of x2 values already exceed infer_w * 1.02, assume boxes already in original scale
+        exceed_ratio = (bboxes[:, 2] > (infer_w * 1.02)).mean()
+        need_scaling = exceed_ratio < 0.5  # if less than 50% exceed infer_w they are likely still in net scale
+        if args.debug:
+            print(f"[DEBUG] BBox scaling heuristic: exceed_ratio={exceed_ratio:.2f} need_scaling={need_scaling}")
+        if need_scaling:
+            scale_x = ow / float(infer_w)
+            scale_y = oh / float(infer_h)
+            if args.debug:
+                print(f"[DEBUG] Rescaling {len(bboxes)} boxes from network size {(infer_w, infer_h)} to original {(ow, oh)} with scales (x={scale_x:.4f}, y={scale_y:.4f})")
+            bboxes[:, [0, 2]] *= scale_x
+            bboxes[:, [1, 3]] *= scale_y
+        else:
+            if args.debug:
+                print("[DEBUG] Skipping bbox scaling; boxes appear already in original image space.")
+
+    # Clamp boxes to image bounds
+    if bboxes.size != 0:
+        bboxes[:, 0::2] = np.clip(bboxes[:, 0::2], 0, ow - 1)
+        bboxes[:, 1::2] = np.clip(bboxes[:, 1::2], 0, oh - 1)
+
+    # If user mistakenly requested raw scores and they are tiny, hint about softmax.
+    if args.use_raw_scores and scores.size != 0 and scores.max() < 0.2 and not args.debug:
+        print("[HINT] Raw logits are very small. Try removing --use-raw-scores to apply softmax normalization.")
 
     lines = format_lines(bboxes, scores, labels, legacy)
     if not lines:
