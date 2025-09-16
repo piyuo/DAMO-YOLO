@@ -13,7 +13,7 @@ python3 pipeline/DAMO-YOLO/onnx_inference_image.py \
   --image pipeline/dataset/demo/demo.jpg \
   --output pipeline/output \
   --use-raw-scores \
-  --score-threshold 0.35\
+  --score-threshold 0.25\
   --max-detections 12 \
   --pure-np \
   --debug

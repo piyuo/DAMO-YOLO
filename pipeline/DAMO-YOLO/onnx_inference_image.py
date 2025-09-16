@@ -39,6 +39,9 @@ if ROOT not in sys.path:
 
 from damo.config.base import parse_config  # noqa: E402
 from tools.demo import Infer  # noqa: E402
+from damo.utils.demo_utils import transform_img  # noqa: E402
+from damo.structures.image_list import ImageList  # noqa: E402
+from damo.utils.boxes import postprocess  # noqa: E402
 
 
 def build_person_config(config_path: str):
@@ -91,6 +94,8 @@ def parse_args():
 						help='Flag reserved for future score transformations (currently no-op).')
 	parser.add_argument('--pure-np', action='store_true',
 						help='Force a pure numpy ONNXRuntime path (still uses torch for postprocess).')
+	parser.add_argument('--direct-onnx', action='store_true',
+						help='Bypass Infer wrapper and call onnxruntime session directly (optional).')
 	parser.add_argument('--debug', action='store_true', help='Print extended diagnostics.')
 	return parser.parse_args()
 
@@ -174,15 +179,57 @@ def run_inference(args):
 
 	cfg = build_person_config(args.config)
 
-	# Always use Infer (it already supports ONNX). pure-np flag currently only
-	# toggles a note; we keep a single robust path.
-	if args.pure_np:
-		print('[INFO] pure-np flagged: using ONNXRuntime through Infer wrapper (postprocess remains torch-based).')
-
-	infer_engine = Infer(cfg, infer_size=args.infer_size, device=device, ckpt=args.onnx, output_dir=args.output)
-
 	origin_img = np.asarray(Image.open(args.image).convert('RGB'))
-	bboxes, scores, cls_inds = infer_engine.forward(origin_img)
+
+	if args.direct_onnx:
+		# Direct onnxruntime path
+		import onnxruntime as ort
+		if args.pure_np:
+			print('[INFO] --pure-np + --direct-onnx: running direct ONNXRuntime session (postprocess still torch).')
+		providers = None
+		if device == 'cuda':
+			# Attempt CUDA provider first
+			available = ort.get_available_providers()
+			if 'CUDAExecutionProvider' in available:
+				providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+		session = ort.InferenceSession(args.onnx, providers=providers or ort.get_available_providers())
+		input_name = session.get_inputs()[0].name
+		# Preprocess (replicating Infer.preprocess logic)
+		img_list = transform_img(origin_img, 0, **cfg.test.augment.transform, infer_size=args.infer_size)
+		oh, ow, _ = origin_img.shape
+		tensors = img_list.tensors  # shape [1,C,H,W]
+		# Pad if smaller than target
+		target_h, target_w = args.infer_size
+		n, c, h, w = tensors.shape
+		if h > target_h or w > target_w:
+			raise ValueError(f"Image resized to ({h},{w}) exceeds target infer size {args.infer_size}")
+		if (h, w) != (target_h, target_w):
+			pad = torch.zeros(n, c, target_h, target_w, dtype=tensors.dtype)
+			pad[:, :, :h, :w] = tensors
+		else:
+			pad = tensors
+		image_list = ImageList(pad, [tensors.shape[-2:]], [pad.shape[-2:]])
+		input_np = image_list.tensors.cpu().numpy()
+		ort_outputs = session.run(None, {input_name: input_np})
+		# Expect [scores, boxes]
+		scores_t = torch.as_tensor(ort_outputs[0])  # [1,N,C]
+		boxes_t = torch.as_tensor(ort_outputs[1])   # [1,N,4]
+		processed = postprocess(scores_t, boxes_t,
+								cfg.model.head.num_classes,
+								cfg.model.head.nms_conf_thre,
+								cfg.model.head.nms_iou_thre,
+								image_list)
+		output = processed[0].resize((ow, oh))
+		bboxes = output.bbox
+		scores = output.get_field('scores')
+		cls_inds = output.get_field('labels')
+		infer_engine = None  # We won't use visualization from wrapper unless we recreate vis call
+	else:
+		# Wrapper path (already uses onnxruntime internally)
+		if args.pure_np:
+			print('[INFO] pure-np flagged: using ONNXRuntime through Infer wrapper (postprocess remains torch-based).')
+		infer_engine = Infer(cfg, infer_size=args.infer_size, device=device, ckpt=args.onnx, output_dir=args.output)
+		bboxes, scores, cls_inds = infer_engine.forward(origin_img)
 
 	# Determine threshold
 	thr = decide_threshold(scores, args)
@@ -216,7 +263,15 @@ def run_inference(args):
 
 	# Visualization: reuse thr so displayed boxes align with what we printed
 	save_name = os.path.basename(args.image)
-	infer_engine.visualize(origin_img, bboxes, scores, cls_inds, conf=thr, save_name=save_name, save_result=True)
+	if infer_engine is not None:
+		infer_engine.visualize(origin_img, bboxes, scores, cls_inds, conf=thr, save_name=save_name, save_result=True)
+	else:
+		# Manual visualization using same util if wrapper not used
+		from damo.utils.visualize import vis  # local import to avoid overhead when not needed
+		vis_img = vis(origin_img.copy(), bboxes, scores, cls_inds, conf=thr, class_names=['person'])
+		out_path = os.path.join(args.output, save_name)
+		import cv2
+		cv2.imwrite(out_path, vis_img[:, :, ::-1])
 
 	return thr, dets
 
