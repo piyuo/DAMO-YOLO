@@ -1,6 +1,10 @@
 timm
 omegaconf
-numpy
+# PyTorch 2.2.x wheels are built against NumPy 1.x. NumPy 2.x triggers
+# "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x" and
+# subsequent "RuntimeError: Numpy is not available" inside torch when calling
+# torch.from_numpy. Pin <2 for now; upgrade torch first before allowing NumPy 2.
+numpy<2.0.0
 opencv_python
 loguru
 scikit-image
