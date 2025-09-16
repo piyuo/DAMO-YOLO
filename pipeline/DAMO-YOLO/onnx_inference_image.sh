@@ -15,7 +15,6 @@ python3 pipeline/DAMO-YOLO/onnx_inference_image.py \
   --use-raw-scores \
   --score-threshold 0.25\
   --max-detections 12 \
-  --pure-np \
   --debug
 
 echo "✅ Fixed ONNX inference completed! Check pipeline/output/ for result images."
