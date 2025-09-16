@@ -91,7 +91,6 @@ def parse_args():
     p.add_argument('--patch', action='store_true', help='Create patched ONNX with selected feature nodes exposed.')
     p.add_argument('--export-features', action='store_true', help='Run inference and save chosen feature maps (.npy).')
     p.add_argument('--save-dir', default=DEFAULT_SAVE_DIR, help='Directory to save feature .npy files.')
-    p.add_argument('--overwrite', action='store_true', help='Overwrite existing patched model if present.')
     p.add_argument('--verbose', action='store_true', help='Verbose logging.')
     p.add_argument('--dump-selected-shapes', action='store_true', help='After (patched) inference on a single image, print shapes of selected feature outputs (implies --export-features for that image, but will not save .npy unless --export-features is also given).')
     p.add_argument('--alias-names', default='', help='Comma-separated short names (e.g. p3,p4,p5) to add as Identity outputs for the selected nodes.')
@@ -407,19 +406,23 @@ def main():
         if patched_path is None:
             base, ext = os.path.splitext(args.onnx)
             patched_path = base + '_feat' + ext
-        if os.path.exists(patched_path) and not args.overwrite:
-            print(f"[INFO] Patched model already exists: {patched_path} (use --overwrite to replace)")
-        else:
-            patched = patch_model_with_outputs(model, selected, verbose=args.verbose)
-            # Handle alias names if requested
-            if args.alias_names:
-                alias_list = [a.strip() for a in args.alias_names.split(',') if a.strip()]
-                if len(alias_list) != len(selected):
-                    print(f"[ERROR] alias-names count ({len(alias_list)}) != selected tensor count ({len(selected)}).")
-                    sys.exit(9)
-                patched = add_alias_outputs(patched, selected, alias_list, drop_original=args.drop_original_outputs, verbose=args.verbose)
-            onnx.save(patched, patched_path)
-            print(f"[OK] Saved patched model with {len(selected)} extra outputs -> {patched_path}")
+        if os.path.exists(patched_path):
+            print(f"[INFO] Overwriting existing patched model: {patched_path}")
+        patched = patch_model_with_outputs(model, selected, verbose=args.verbose)
+        # Handle alias names if requested
+        if args.alias_names:
+            alias_list = [a.strip() for a in args.alias_names.split(',') if a.strip()]
+            if len(alias_list) != len(selected):
+                print(f"[ERROR] alias-names count ({len(alias_list)}) != selected tensor count ({len(selected)}).")
+                sys.exit(9)
+            patched = add_alias_outputs(patched, selected, alias_list, drop_original=args.drop_original_outputs, verbose=args.verbose)
+            # If originals were dropped, update the working selection list to the alias names
+            if args.drop_original_outputs:
+                if args.verbose:
+                    print(f"[INFO] Replacing selected tensor list with aliases: {alias_list}")
+                selected = alias_list
+        onnx.save(patched, patched_path)
+        print(f"[OK] Saved patched model with {len(selected)} extra outputs -> {patched_path}")
     else:
         # If not patching, we cannot expose new outputs unless they already exist.
         missing = [n for n in selected if n not in {o.name for o in model.graph.output}]
@@ -427,20 +430,21 @@ def main():
             print(f"[ERROR] Selected nodes are not current outputs: {missing}. Add --patch to expose them.")
             sys.exit(4)
         patched_path = args.onnx
-        # If aliasing without patch requested, we still need to modify model file; so perform in-place patch clone
+        # If aliasing without patch requested, modify in-place
         if args.alias_names:
-            # Load, alias, save to a new file unless overwrite specified
             alias_list = [a.strip() for a in args.alias_names.split(',') if a.strip()]
             if len(alias_list) != len(selected):
                 print(f"[ERROR] alias-names count ({len(alias_list)}) != selected tensor count ({len(selected)}).")
                 sys.exit(9)
             temp_model = onnx.load(patched_path)
             temp_model = add_alias_outputs(temp_model, selected, alias_list, drop_original=args.drop_original_outputs, verbose=args.verbose)
-            alias_target = patched_path if args.overwrite else patched_path.replace('.onnx','_alias.onnx')
-            onnx.save(temp_model, alias_target)
+            onnx.save(temp_model, patched_path)
             if args.verbose:
-                print(f"[INFO] Saved alias-augmented model -> {alias_target}")
-            patched_path = alias_target
+                print(f"[INFO] Saved alias-augmented model -> {patched_path}")
+            if args.drop_original_outputs:
+                if args.verbose:
+                    print(f"[INFO] Replacing selected tensor list with aliases: {alias_list}")
+                selected = alias_list
 
     if args.export_features or args.dump_selected_shapes:
         # Build session on patched model
