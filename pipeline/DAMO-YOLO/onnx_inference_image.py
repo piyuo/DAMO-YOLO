@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Pure ONNXRuntime single-class (person) inference script.
+"""Standalone ONNX person detection inference script.
 
-Refactored to remove any dependency on torch or the generic Infer wrapper.
+This script is completely self-contained and requires only standard Python libraries
+plus NumPy, OpenCV, PIL, and ONNXRuntime. No DAMO-YOLO dependencies needed.
+
+Required packages:
+    pip install numpy opencv-python pillow onnxruntime
+
 All preprocessing, postprocessing, NMS, and visualization are handled with
-NumPy, OpenCV, and ONNXRuntime only. Configuration is hardcoded for person detection.
+NumPy and OpenCV only. Configuration is hardcoded for person detection.
 
 Example:
     python3 pipeline/DAMO-YOLO/onnx_inference_image.py \
@@ -31,12 +36,65 @@ from PIL import Image
 import cv2
 import onnxruntime as ort
 
-# Script location: repo_root/pipeline/DAMO-YOLO -> go two levels up to reach root
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if ROOT not in sys.path:
-	sys.path.insert(0, ROOT)
 
-from damo.utils.visualize import vis  # noqa: E402
+def draw_bounding_boxes(img, boxes, scores, cls_ids, conf=0.5, class_names=None):
+	"""Simple visualization function to draw bounding boxes on images.
+
+	Args:
+		img: Input image (numpy array)
+		boxes: Bounding boxes in format [x1, y1, x2, y2]
+		scores: Confidence scores
+		cls_ids: Class IDs
+		conf: Confidence threshold
+		class_names: List of class names
+
+	Returns:
+		Image with drawn bounding boxes
+	"""
+	# Ensure the image is writeable
+	if not img.flags.writeable:
+		img = img.copy()
+
+	# Simple color for person detection (green)
+	color = (0, 255, 0)  # BGR format for cv2
+	txt_color = (255, 255, 255)  # White text
+	font = cv2.FONT_HERSHEY_SIMPLEX
+	font_scale = 0.6
+	thickness = 2
+
+	for i in range(len(boxes)):
+		box = boxes[i]
+		cls_id = int(cls_ids[i])
+		score = scores[i]
+
+		if score < conf:
+			continue
+
+		x0 = int(box[0])
+		y0 = int(box[1])
+		x1 = int(box[2])
+		y1 = int(box[3])
+
+		# Draw bounding box
+		cv2.rectangle(img, (x0, y0), (x1, y1), color, thickness)
+
+		# Prepare text
+		if class_names and cls_id < len(class_names):
+			text = f'{class_names[cls_id]}:{score*100:.1f}%'
+		else:
+			text = f'person:{score*100:.1f}%'
+
+		# Get text size for background rectangle
+		txt_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+
+		# Draw text background
+		cv2.rectangle(img, (x0, y0 - txt_size[1] - 10),
+					 (x0 + txt_size[0], y0), color, -1)
+
+		# Draw text
+		cv2.putText(img, text, (x0, y0 - 5), font, font_scale, txt_color, thickness)
+
+	return img
 
 
 class SimpleConfig:
@@ -60,9 +118,9 @@ def parse_args():
 	parser = argparse.ArgumentParser("ONNX person inference")
 	parser.add_argument('--onnx', required=True,
 						help='Path to ONNX model file (.onnx)')
-	parser.add_argument('--image', default=os.path.join(ROOT, 'pipeline', 'dataset', 'demo', 'demo.jpg'),
+	parser.add_argument('--image', default='pipeline/dataset/demo/demo.jpg',
 						help='Input image path')
-	parser.add_argument('--output', default=os.path.join(ROOT, 'pipeline', 'output'),
+	parser.add_argument('--output', default='pipeline/output',
 						help='Directory to save annotated image')
 	parser.add_argument('--infer-size', type=int, nargs=2, default=[640, 640],
 						help='Inference size (h w) fed to the model')
@@ -300,7 +358,7 @@ def run_inference(args):
 			print(f"  {rank:02d}. person (raw_idx={raw_idx}) score={score:.4f} bbox=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f})")
 
 	# Visualization with threshold thr
-	vis_img = vis(origin_img.copy(), final_boxes, final_scores, final_labels, conf=thr, class_names=cfg.class_names)
+	vis_img = draw_bounding_boxes(origin_img.copy(), final_boxes, final_scores, final_labels, conf=thr, class_names=cfg.class_names)
 	save_name = os.path.basename(args.image)
 	out_path = os.path.join(args.output, save_name)
 	cv2.imwrite(out_path, vis_img[:, :, ::-1])
