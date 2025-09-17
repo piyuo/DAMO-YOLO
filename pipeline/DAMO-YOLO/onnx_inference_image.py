@@ -15,10 +15,7 @@ Example:
         --onnx pipeline/output/damoyolo_tinynasL25_S_person.onnx \
         --image pipeline/dataset/demo/demo.jpg \
         --output pipeline/output \
-        --score-threshold 0.5
-
-You can also use percentile-based adaptive thresholding:
-    --score-threshold-percentile 98
+        --conf 0.5
 
 If the exported ONNX uses a legacy head (person + background), the second
 channel (background) is discarded so only the person channel is used.
@@ -104,14 +101,17 @@ class SimpleConfig:
 		# Model head configuration
 		self.num_classes = 1
 		self.legacy = True
-		self.nms_conf_thre = 0.01
-		self.nms_iou_thre = 0.7
+		self.nms_conf_thre = 0.01  # Internal pre-filtering threshold
+		self.nms_iou_thre = 0.7    # IoU threshold for NMS
 
 		# Dataset configuration
 		self.class_names = ['person']
 
 		# Transform configuration
 		self.image_max_range = (640, 640)
+
+		# Processing configuration
+		self.fallback_max_detections = 5  # Show top 5 when no detections above threshold
 
 
 def parse_args():
@@ -126,50 +126,21 @@ def parse_args():
 						help='Inference size (h w) fed to the model')
 	parser.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'],
 						help='Device preference (auto picks cuda if available)')
-	parser.add_argument('--score-threshold', type=float, default=None,
-						help='Explicit score threshold (overrides percentile if set)')
-	parser.add_argument('--score-threshold-percentile', type=float, default=None,
-						help='Percentile of score distribution to use as threshold (e.g. 99.5)')
-	parser.add_argument('--max-detections', type=int, default=50,
-						help='Max detections to keep after filtering & sorting')
-	parser.add_argument('--conf', type=float, default=None,
-						help='(Deprecated) alias for --score-threshold')
-	parser.add_argument('--use-raw-scores', action='store_true',
-						help='(No-op placeholder; raw scores already used).')
-	parser.add_argument('--internal-nms-thr', type=float, default=None,
-						help='Override NMS IoU threshold from config (optional).')
-	parser.add_argument('--internal-pre-score', type=float, default=0.01,
-						help='Score threshold used before NMS (on raw person scores).')
-	parser.add_argument('--providers', default='',
-						help="Comma-separated ONNX Runtime providers to force order (e.g. 'CPUExecutionProvider' or 'CUDAExecutionProvider,CPUExecutionProvider'). Leave empty for ORT defaults.")
+	parser.add_argument('--conf', type=float, default=0.5,
+						help='Confidence threshold for detections')
 	parser.add_argument('--debug', action='store_true', help='Print extended diagnostics.')
 	return parser.parse_args()
 
 
 def decide_threshold(scores: np.ndarray, args) -> float:
-	"""Decide effective threshold based on args and available scores.
-
-	Precedence:
-	  1. --score-threshold or --conf (explicit)
-	  2. --score-threshold-percentile
-	  3. Fallback default 0.3
-	"""
-	explicit = args.score_threshold if args.score_threshold is not None else args.conf
-	if explicit is not None:
-		return float(explicit)
-	if args.score_threshold_percentile is not None and scores.size > 0:
-		p = float(args.score_threshold_percentile)
-		p = max(0.0, min(100.0, p))
-		thr = float(np.quantile(np.sort(scores), p / 100.0))
-		return thr
-	return 0.3
+	"""Return the confidence threshold from args."""
+	return float(args.conf)
 
 
 def format_results(bboxes: np.ndarray,
 			   scores: np.ndarray,
 			   labels: np.ndarray,
 			   conf_thre: float,
-			   max_det: int,
 			   legacy_single_class: bool = True) -> List[Tuple[int, float, List[float]]]:
 	"""Return filtered & sorted detection tuples.
 
@@ -190,8 +161,6 @@ def format_results(bboxes: np.ndarray,
 		dets.append((i, s, [x1, y1, x2, y2]))
 	# Sort by descending score
 	dets.sort(key=lambda t: t[1], reverse=True)
-	if max_det and len(dets) > max_det:
-		dets = dets[:max_det]
 	return dets
 
 
@@ -272,13 +241,9 @@ def run_inference(args):
 	# Use hardcoded configuration instead of loading from file
 	cfg = SimpleConfig()
 
-	# Determine providers (user override > cuda preference > ORT defaults)
-	custom_providers = [p.strip() for p in args.providers.split(',') if p.strip()]
-	if custom_providers:
-		provider_list = custom_providers
-	else:
-		provider_list = None
-	if provider_list is None and args.device == 'cuda':
+	# Determine providers (cuda preference > ORT defaults)
+	provider_list = None
+	if args.device == 'cuda':
 		available = ort.get_available_providers()
 		if 'CUDAExecutionProvider' in available:
 			provider_list = ['CUDAExecutionProvider', 'CPUExecutionProvider']
@@ -310,9 +275,9 @@ def run_inference(args):
 		person_scores = raw_scores[0]
 	boxes = raw_boxes[0]  # (N,4)
 
-	# Internal NMS / filtering
-	score_thr_internal = args.internal_pre_score
-	iou_thr = args.internal_nms_thr if args.internal_nms_thr is not None else cfg.nms_iou_thre
+	# Internal NMS / filtering (use hardcoded values)
+	score_thr_internal = 0.01  # Low threshold for internal pre-filtering
+	iou_thr = cfg.nms_iou_thre  # Use config value (0.7)
 	dets = multiclass_nms_np(boxes, person_scores, iou_thr=iou_thr, score_thr=score_thr_internal)
 	if dets is None:
 		final_boxes = np.zeros((0, 4), dtype=np.float32)
@@ -336,11 +301,11 @@ def run_inference(args):
 	if args.debug:
 		debug_print(final_scores, final_labels, thr)
 
-	formatted = format_results(final_boxes, final_scores, final_labels, thr, args.max_detections, legacy_single_class=True)
+	formatted = format_results(final_boxes, final_scores, final_labels, thr, legacy_single_class=True)
 
-	# Fallback if nothing above thr
+	# Fallback if nothing above thr - show top detections
 	if not formatted and final_scores.size > 0:
-		topk = min(args.max_detections, final_scores.size)
+		topk = min(cfg.fallback_max_detections, final_scores.size)
 		idxs = np.argsort(-final_scores)[:topk]
 		for idx in idxs:
 			if final_labels[idx] != 0:

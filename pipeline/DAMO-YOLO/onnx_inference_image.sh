@@ -12,9 +12,7 @@ python3 pipeline/DAMO-YOLO/onnx_inference_image.py \
   --onnx pipeline/output/damoyolo_tinynasL25_S_person.onnx \
   --image pipeline/dataset/demo/demo.jpg \
   --output pipeline/output \
-  --use-raw-scores \
-  --score-threshold 0.25\
-  --max-detections 12 \
+  --conf 0.5 \
   --debug
 
 echo "✅ Fixed ONNX inference completed! Check pipeline/output/ for result images."
