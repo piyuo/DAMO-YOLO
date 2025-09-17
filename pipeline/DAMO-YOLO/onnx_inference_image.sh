@@ -1,12 +1,12 @@
 # pipeline/DAMO-YOLO/onnx_inference_image.sh
 #!/bin/bash
-# pipeline/DAMO-YOLO/onnx_inference_image_fixed.sh
-# Fixed version of ONNX inference script that handles low confidence scores properly
+# pipeline/DAMO-YOLO/onnx_inference_image.sh
+
 # Activate the Python virtual environment
 echo "🔧 Activating Python environment..."
 source .venv/bin/activate
 
-echo "🔧 Running fixed ONNX inference..."
+echo "🔧 Running ONNX inference..."
 
 python3 pipeline/DAMO-YOLO/onnx_inference_image.py \
   --onnx pipeline/output/damoyolo_tinynasL25_S_person.onnx \

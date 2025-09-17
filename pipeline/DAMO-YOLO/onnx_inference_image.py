@@ -3,11 +3,11 @@
 
 Refactored to remove any dependency on torch or the generic Infer wrapper.
 All preprocessing, postprocessing, NMS, and visualization are handled with
-NumPy, OpenCV, and ONNXRuntime only (plus config parsing for thresholds).
+NumPy, OpenCV, and ONNXRuntime only. Configuration is hardcoded for person detection.
 
 Example:
     python3 pipeline/DAMO-YOLO/onnx_inference_image.py \
-        --onnx pipeline/DAMO-YOLO/input/damoyolo_tinynasL25_S_person.onnx \
+        --onnx pipeline/output/damoyolo_tinynasL25_S_person.onnx \
         --image pipeline/dataset/demo/demo.jpg \
         --output pipeline/output \
         --score-threshold 0.5
@@ -36,38 +36,28 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if ROOT not in sys.path:
 	sys.path.insert(0, ROOT)
 
-from damo.config.base import parse_config  # noqa: E402
 from damo.utils.visualize import vis  # noqa: E402
 
 
-def build_person_config(config_path: str):
-	"""Load base config and adapt for single-class (person) legacy inference.
+class SimpleConfig:
+	"""Hardcoded configuration for person detection inference."""
 
-	Adjustments:
-	  - head.num_classes = 1
-	  - head.legacy = True (if attribute exists) so output has (num_classes + 1) channels.
-	  - dataset.class_names = ['person']
-	  - enforce test transform size 640x640
-	"""
-	cfg = parse_config(config_path)
-	cfg.model.head.num_classes = 1
-	try:
-		cfg.model.head.legacy = True
-	except Exception:
-		pass
-	cfg.dataset.class_names = ['person']
-	if hasattr(cfg.test, 'augment') and hasattr(cfg.test.augment, 'transform'):
-		cfg.test.augment.transform.image_max_range = (640, 640)
-	# Lower default NMS confidence threshold so we can apply custom filtering later
-	if hasattr(cfg.model.head, 'nms_conf_thre'):
-		cfg.model.head.nms_conf_thre = 0.01
-	return cfg
+	def __init__(self):
+		# Model head configuration
+		self.num_classes = 1
+		self.legacy = True
+		self.nms_conf_thre = 0.01
+		self.nms_iou_thre = 0.7
+
+		# Dataset configuration
+		self.class_names = ['person']
+
+		# Transform configuration
+		self.image_max_range = (640, 640)
 
 
 def parse_args():
 	parser = argparse.ArgumentParser("ONNX person inference")
-	parser.add_argument('--config', default=os.path.join(ROOT, 'configs', 'damoyolo_tinynasL25_S.py'),
-						help='Base config path (will be adapted to 1-class).')
 	parser.add_argument('--onnx', required=True,
 						help='Path to ONNX model file (.onnx)')
 	parser.add_argument('--image', default=os.path.join(ROOT, 'pipeline', 'dataset', 'demo', 'demo.jpg'),
@@ -221,7 +211,8 @@ def run_inference(args):
 		raise FileNotFoundError(f"Image not found: {args.image}")
 	os.makedirs(args.output, exist_ok=True)
 
-	cfg = build_person_config(args.config)
+	# Use hardcoded configuration instead of loading from file
+	cfg = SimpleConfig()
 
 	# Determine providers (user override > cuda preference > ORT defaults)
 	custom_providers = [p.strip() for p in args.providers.split(',') if p.strip()]
@@ -263,7 +254,7 @@ def run_inference(args):
 
 	# Internal NMS / filtering
 	score_thr_internal = args.internal_pre_score
-	iou_thr = args.internal_nms_thr if args.internal_nms_thr is not None else getattr(cfg.model.head, 'nms_iou_thre', 0.7)
+	iou_thr = args.internal_nms_thr if args.internal_nms_thr is not None else cfg.nms_iou_thre
 	dets = multiclass_nms_np(boxes, person_scores, iou_thr=iou_thr, score_thr=score_thr_internal)
 	if dets is None:
 		final_boxes = np.zeros((0, 4), dtype=np.float32)
@@ -309,7 +300,7 @@ def run_inference(args):
 			print(f"  {rank:02d}. person (raw_idx={raw_idx}) score={score:.4f} bbox=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f})")
 
 	# Visualization with threshold thr
-	vis_img = vis(origin_img.copy(), final_boxes, final_scores, final_labels, conf=thr, class_names=['person'])
+	vis_img = vis(origin_img.copy(), final_boxes, final_scores, final_labels, conf=thr, class_names=cfg.class_names)
 	save_name = os.path.basename(args.image)
 	out_path = os.path.join(args.output, save_name)
 	cv2.imwrite(out_path, vis_img[:, :, ::-1])
